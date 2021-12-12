@@ -1,5 +1,7 @@
 # Google Research
 
+Forked dual_pixels app for use in project involving dual pixels. Modified to output RAW image as a packed 16-bit byte file with each 2 byte chunk being one pixel so that it can be demosaiced.
+
 This repository contains code released by
 [Google Research](https://research.google).
 
