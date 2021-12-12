@@ -32,6 +32,7 @@ import android.widget.Toast;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.nio.ShortBuffer;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -163,6 +164,7 @@ public class PdCaptureActivity extends Activity {
       previewDimensions = getLargestByArea(streamConfigMap.getOutputSizes(SurfaceTexture.class));
       raw10Dimensions = getLargestByArea(streamConfigMap.getOutputSizes(ImageFormat.RAW10));
       Log.d(TAG, "Preview dimensions: " + previewDimensions);
+      Log.d(TAG, "Raw dimensions: " + raw10Dimensions);
       if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
         requestPermissions(
             new String[] {Manifest.permission.CAMERA}, CAMERA_PERMISSION_REQUEST_CODE);
@@ -267,6 +269,7 @@ public class PdCaptureActivity extends Activity {
       final CaptureRequest.Builder captureBuilder =
           cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
       captureBuilder.addTarget(dpImageReader.getSurface());
+      captureBuilder.addTarget(rawImageReader.getSurface());
       captureBuilder.addTarget(new Surface(viewfinderTextureView.getSurfaceTexture()));
       captureBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
       cameraCaptureSession.capture(captureBuilder.build(), null, cameraHandler);
@@ -321,6 +324,42 @@ public class PdCaptureActivity extends Activity {
             raw10Dimensions.getHeight(),
             ImageFormat.RAW10,
             /*maxImages=*/ 10);
+    rawImageReader.setOnImageAvailableListener(
+            new ImageReader.OnImageAvailableListener() {
+              @Override
+              public void onImageAvailable(ImageReader reader) {
+                Image image = null;
+                try {
+                  image = reader.acquireLatestImage();
+                  Log.d(TAG, "Acquired raw image with timestamp: " + image.getTimestamp());
+                  Log.d(TAG, "Image format : " + image.getFormat());
+                  ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+                  Log.d(TAG, "Buffer pixelstride : " + image.getPlanes()[0].getPixelStride());
+                  Log.d(TAG, "Buffer rowstride : " + image.getPlanes()[0].getRowStride());
+                  //byte[] interleavedDpData = new byte[buffer.remaining()];
+                  //buffer.get(interleavedDpData);
+                  Log.d(TAG, "Buffer has : " + buffer.position());
+                  short[] processedData = processRaw10(buffer, image.getPlanes()[0].getRowStride(), raw10Dimensions.getWidth(), raw10Dimensions.getHeight());
+                  /*float multiplier = (float) TARGET_WHITE_LEVEL / DP_WHITE_LEVEL;
+                  for (int i =  0; i< interleavedDpData.length; ++i) {
+                    interleavedDpData[i] = (short) (interleavedDpData[i] * multiplier);
+                  }*/
+                  // Saves images with filenames based on the current time.
+                  String rootName = getCurrentTimeStr();
+                  Toast toast =
+                          Toast.makeText(PdCaptureActivity.this, "Saved:" + rootName, Toast.LENGTH_SHORT);
+                  toast.setGravity(Gravity.TOP, 0, 0);
+                  toast.show();
+                  File output = new File(outputDirectory, rootName + ".raw");
+                  saveRaw16(output.getAbsolutePath(), processedData, raw10Dimensions.getWidth(), raw10Dimensions.getHeight());
+                } finally {
+                  if (image != null) {
+                    image.close();
+                  }
+                }
+              }
+            },
+            cameraHandler);
   }
 
   /** Holds data corresponding to the left and right dual-pixel views. */
@@ -359,6 +398,33 @@ public class PdCaptureActivity extends Activity {
     return bytes;
   }
 
+  private short[] processRaw10(ByteBuffer buffer, int rowstride, int width, int height) {
+    short[] data = new short[width * height];
+    for (int row = 0; row<height; ++row) {
+      byte[] rowData = new byte[rowstride];
+      buffer.get(rowData, 0, rowstride);
+      int length = width * 10 / 8;
+      int col = 0;
+      for (int i = 0; i < length; i+=5) {
+        byte p0 = rowData[i];
+        byte p1 = rowData[i + 1];
+        byte p2 = rowData[i + 2];
+        byte p3 = rowData[i + 3];
+        byte extra = rowData[i + 4];
+        data[row*width+col] = (short) ((p0 << 2) | ((extra >> 0) & 0x3));
+        data[row*width+col+1] = (short) ((p1 << 2) | ((extra >> 2) & 0x3));
+        data[row*width+col+2] = (short) ((p2 << 2) | ((extra >> 4) & 0x3));
+        data[row*width+col+3] = (short) ((p3 << 2) | ((extra >> 6) & 0x3));
+        col += 4;
+      }
+    }
+    float multiplier = (float) TARGET_WHITE_LEVEL / DP_WHITE_LEVEL;
+    for (int i =  0; i< data.length; ++i) {
+      data[i] = (short) (data[i] * multiplier);
+    }
+    return data;
+  }
+
   /** Saves a 16 bit image as a PGM file. */
   private void savePgm16(String filename, short[] imageData, int width, int height) {
     String header = String.format("P5 %d %d %d ", width, height, TARGET_WHITE_LEVEL);
@@ -367,6 +433,23 @@ public class PdCaptureActivity extends Activity {
       output = new FileOutputStream(filename);
       if (null != output) {
         output.write(header.getBytes());
+        output.write(shortArrayToByteArray(imageData));
+        output.close();
+      }
+    } catch (Exception e) {
+      e.printStackTrace();
+    }
+  }
+
+  /** Saves a 16 bit image as a PGM file. */
+  private void saveRaw16(String filename, short[] imageData, int width, int height) {
+    //String header = String.format("P5 %d %d %d ", width, height, TARGET_WHITE_LEVEL);
+    OutputStream output = null;
+    try {
+      output = new FileOutputStream(filename);
+      if (null != output) {
+        //output.write(header.getBytes());
+        Log.d(TAG, "Saved output of size: " + imageData.length);
         output.write(shortArrayToByteArray(imageData));
         output.close();
       }
